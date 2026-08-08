@@ -82,7 +82,14 @@ An ineligible arrival is **not a failure**: PRW is terminal, so throwing would s
   `ON CONFLICT (arrival_id, batch_ordinal) DO NOTHING`. Members freeze set-based; each batch's
   `tx_count`/`control_sum` freeze with them; every file builds strictly from that snapshot and
   reconciles against its OWN frozen `tx_count` first. States walk `PLANNED -> MATERIALIZED -> VISIBLE`.
-- **Outbound identity.** Unsplit: bare source MsgId, file `<initg_pty>_<msg_id>_PAIN008.xml`. Split:
+- **Outbound client (A-43, ruled 2026-08-08).** `<client>` below is `tx_header.client_token`, the R-31
+  filename token, falling back to the copybook `initg_pty` when an arrival carried no filename. It is
+  resolved ONCE, in `DueSql.CLIENT_EXPR`, so `prw_emission_group.client`, the file name and the
+  per-client output directory cannot come from different sources. `ext_tx_status.client` and
+  `prg_watermark.client` in `dcre_pay` already carry `client_token`, so this is what stops a parent
+  being named in `prg_report_due` under an identity the watermark cannot select. The emitted pain.008
+  is unchanged: no message this fleet emits carries an initiating party.
+- **Outbound identity.** Unsplit: bare source MsgId, file `<client>_<msg_id>_PAIN008.xml`. Split:
   children suffixed `_1.._N`. The sequence is exactly 1..N with no offset. A unique index on
   `outbound_msg_id` is the cross-ARRIVAL guard that makes the two-column claim key safe.
 - **Durable-effect ordering.** The plan transaction commits group, batches, members and frozen totals

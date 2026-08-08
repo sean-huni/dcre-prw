@@ -42,6 +42,38 @@ package za.co.fnb.dcre.prw.data.repo;
 final class DueSql {
 
     /**
+     * The outbound client of a {@code tx_header} row: the R-31 filename token when the arrival
+     * carried one, else the mandatory copybook {@code destination_id} (A-43, ruled 2026-08-08).
+     *
+     * <p>{@code client_token} is the R-31 filename token AGT already matched against the
+     * drop-zone directory, so it is the "resolved from trusted route/profile config" identity
+     * R-16 demands; {@code initg_pty} is an unresolved header value whose value domain is still
+     * open as A-19. {@code initg_pty} is the FALLBACK rather than the source because
+     * {@code client_token} is nullable by design (a job launched outside AGT carries no original
+     * filename) while {@code prw_emission_group.client} is NOT NULL, so a bare swap would turn a
+     * silent mis-selection into an insert failure. Same shape as CRW's, and as
+     * {@code mandates/mrw}'s {@code ManRequestHeaderView.client()}, which chose it first.
+     *
+     * <p>THIS IS THE SINGLE POINT at which the outbound client is resolved, deliberately: the
+     * value reaches {@code prw_emission_group.client}, the outbound file NAME and the per-client
+     * output DIRECTORY from one row, and resolving it at the column write would leave the
+     * directory on the old source with nothing able to object.
+     *
+     * <p>It also closes the two-homes defect this repo's sibling PRG reported on 2026-08-08:
+     * {@code ext_tx_status.client} and {@code prg_watermark.client} carry
+     * {@code tx_header.client_token}, so an emission group written from {@code initg_pty} could
+     * name a parent whose rows the watermark then cannot select, leaving the parent due forever
+     * with no error anywhere.
+     *
+     * <p>ASSEMBLY TRAP: a Java text block strips trailing whitespace from every line, so joining a
+     * block that ends {@code ... AND } to this constant yields {@code ANDCOALESCE(...)} and a
+     * statement CockroachDB rejects at runtime with nothing visible at compile time. It cost CRW a
+     * red build on 2026-08-08. State every separator OUTSIDE the block, and let
+     * {@code DueSqlAssemblyTest} assert the assembled statement.
+     */
+    static final String CLIENT_EXPR = "COALESCE(h.client_token, h.initg_pty)";
+
+    /**
      * SINGLE SOURCE for payments eligibility. Every query below composes this, so a gate
      * cannot be tightened in the arrival lookup and left loose in the member claim.
      */
@@ -67,8 +99,8 @@ final class DueSql {
             """ + DUE_GATES;
 
     /** The launched arrival's identity, or no row at all when it is not (yet) eligible. */
-    static final String DUE_ARRIVAL = """
-            SELECT h.arrival_id, h.initg_pty, h.msg_id
+    static final String DUE_ARRIVAL = "SELECT h.arrival_id, " + CLIENT_EXPR + """
+             AS client, h.msg_id
             FROM tx_header h
             WHERE h.arrival_id = :arrivalId AND
             """ + DUE_GATES;

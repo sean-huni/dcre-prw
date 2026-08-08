@@ -52,7 +52,13 @@
                 <constraints primaryKey="true" nullable="false"/>
             </column>
             <column name="arrival_id" type="UUID"><constraints nullable="false"/></column>
-            <column name="client" type="VARCHAR(35)"><constraints nullable="false"/></column>
+            <!-- VARCHAR(16), the width of the authority (A-43, ruled 2026-08-08): this column
+                 carries tx_header.client_token, falling back to initg_pty only when no R-31
+                 filename token existed. 35 was initg_pty's pain.008 width and was inherited
+                 from a source this column no longer has; 16 matches client_token,
+                 crw_emission_group.client, ext_tx_status.client and prg_watermark.client, which
+                 is the set of columns that must join to it. -->
+            <column name="client" type="VARCHAR(16)"><constraints nullable="false"/></column>
             <column name="source_msg_id" type="VARCHAR(35)"><constraints nullable="false"/></column>
             <column name="applied_max" type="INT"><constraints nullable="false"/></column>
             <column name="total_tx" type="BIGINT"><constraints nullable="false"/></column>
