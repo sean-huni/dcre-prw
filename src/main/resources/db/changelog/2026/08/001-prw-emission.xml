@@ -1,0 +1,213 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<databaseChangeLog
+        xmlns="http://www.liquibase.org/xml/ns/dbchangelog"
+        xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
+        xsi:schemaLocation="http://www.liquibase.org/xml/ns/dbchangelog
+        http://www.liquibase.org/xml/ns/dbchangelog/dbchangelog-latest.xsd">
+
+    <!--
+        The PAYMENTS emission tables, in dcre_pay. PRW is their single writer (R-04).
+
+        THE ONE STRUCTURAL DIFFERENCE FROM CRW, and the reason this is a fork rather
+        than a rename: there is no run_date column anywhere below.
+
+        CRW carries run_date in every business key because collections WAREHOUSES.
+        CDE estimates a collection day per transaction, CRW emits only the slice whose
+        process_date equals the run date, and the futured remainder legitimately
+        becomes due AGAIN on a later run date as a NEW physical artifact. run_date is
+        what keeps those artifacts distinct.
+
+        Payments has no CDE, no cde_schedule row and no collection day: a payment is
+        processed immediately (Sean, 2026-08-07). An arrival is emitted once, in full,
+        by the PRW stage AGT launches after PAI. There is no futured remainder, so
+        there is no second run date, so run_date is not part of any identity here.
+        Carrying it would be worse than redundant: a nullable-or-defaulted date in a
+        unique constraint is an identity dimension that varies for reasons unrelated
+        to the business entity, which is precisely how an idempotency key stops
+        matching itself across a restart.
+
+        What that removes, concretely: crw_emission_group's (arrival_id, run_date)
+        becomes (arrival_id); crw_emission's (arrival_id, run_date, batch_ordinal)
+        becomes (arrival_id, batch_ordinal); and CRW's countPriorArtifacts, which
+        enumerates a parent's artifacts across OTHER run dates so a re-emission never
+        reuses an outbound MsgId, has nothing to count and is gone.
+
+        What it does NOT remove: the group/batch SPLIT. That is a Fintegrate file-size
+        cap (SCRUM-55, max tx per outbound pain.008), not warehousing machinery, and a
+        300k-transaction payment arrival needs it exactly as much as a collections one.
+        The design's wording is "MINUS the warehousing columns", and run_date is the
+        warehousing column.
+
+        Re-run safety uses onFail="CONTINUE", never MARK_RAN (A-79, A-81). MARK_RAN
+        records the skip PERMANENTLY, so a database that was merely not-yet-ready at
+        the moment of the check never gets the change at all. That shape has already
+        cost this project two defects, one of them a silent permanent hang.
+    -->
+    <changeSet id="prw-001-emission-group" author="dcre">
+        <preConditions onFail="CONTINUE">
+            <not><tableExists tableName="prw_emission_group"/></not>
+        </preConditions>
+        <createTable tableName="prw_emission_group">
+            <column name="id" type="UUID" defaultValueComputed="gen_random_uuid()">
+                <constraints primaryKey="true" nullable="false"/>
+            </column>
+            <column name="arrival_id" type="UUID"><constraints nullable="false"/></column>
+            <column name="client" type="VARCHAR(35)"><constraints nullable="false"/></column>
+            <column name="source_msg_id" type="VARCHAR(35)"><constraints nullable="false"/></column>
+            <column name="applied_max" type="INT"><constraints nullable="false"/></column>
+            <column name="total_tx" type="BIGINT"><constraints nullable="false"/></column>
+            <column name="total_amount" type="DECIMAL(18,2)"><constraints nullable="false"/></column>
+            <column name="expected_batch_count" type="INT"><constraints nullable="false"/></column>
+            <column name="split" type="BOOLEAN"><constraints nullable="false"/></column>
+            <!-- BaseEntity (configuration.md point 20). -->
+            <column name="version" type="BIGINT" defaultValueNumeric="0">
+                <constraints nullable="false"/>
+            </column>
+            <column name="created_at" type="TIMESTAMPTZ" defaultValueComputed="now()">
+                <constraints nullable="false"/>
+            </column>
+            <column name="updated_at" type="TIMESTAMPTZ" defaultValueComputed="now()">
+                <constraints nullable="false"/>
+            </column>
+        </createTable>
+        <rollback>
+            <dropTable tableName="prw_emission_group"/>
+        </rollback>
+    </changeSet>
+
+    <!-- The plan claim's idempotency key. ONE plan per arrival: CRW's key is
+         (arrival_id, run_date) because the same parent replans on a later date;
+         here the arrival IS the identity.
+
+         client + source_msg_id is the SECOND uniqueness tuple and is kept, not
+         folded away: it is the business identity of the inbound instruction book
+         as the client stated it, and it is what catches a redelivered file that
+         was assigned a fresh arrival_id upstream. Dropping it because arrival_id
+         is "already unique" would narrow the key below the full business identity,
+         which is the failure this estate has paid for twice. -->
+    <changeSet id="prw-001-emission-group-identity" author="dcre">
+        <preConditions onFail="CONTINUE">
+            <not>
+                <indexExists tableName="prw_emission_group" indexName="uq_prw_group_arrival"/>
+            </not>
+        </preConditions>
+        <addUniqueConstraint tableName="prw_emission_group" columnNames="arrival_id"
+                             constraintName="uq_prw_group_arrival"/>
+        <addUniqueConstraint tableName="prw_emission_group" columnNames="client, source_msg_id"
+                             constraintName="uq_prw_group_client_msg"/>
+        <rollback>
+            <dropUniqueConstraint tableName="prw_emission_group"
+                                  constraintName="uq_prw_group_client_msg"/>
+            <dropUniqueConstraint tableName="prw_emission_group"
+                                  constraintName="uq_prw_group_arrival"/>
+        </rollback>
+    </changeSet>
+
+    <changeSet id="prw-001-emission" author="dcre">
+        <preConditions onFail="CONTINUE">
+            <not><tableExists tableName="prw_emission"/></not>
+        </preConditions>
+        <createTable tableName="prw_emission">
+            <column name="id" type="UUID" defaultValueComputed="gen_random_uuid()">
+                <constraints primaryKey="true" nullable="false"/>
+            </column>
+            <column name="group_id" type="UUID"><constraints nullable="false"/></column>
+            <column name="arrival_id" type="UUID"><constraints nullable="false"/></column>
+            <column name="batch_ordinal" type="INT"><constraints nullable="false"/></column>
+            <column name="outbound_msg_id" type="VARCHAR(64)"><constraints nullable="false"/></column>
+            <column name="file_name" type="VARCHAR(128)"><constraints nullable="false"/></column>
+            <!-- PLANNED -> MATERIALIZED -> VISIBLE, born at CRW's post-widening
+                 VARCHAR(32) rather than at the VARCHAR(16) it had to be ALTERed from. -->
+            <column name="state" type="VARCHAR(32)"><constraints nullable="false"/></column>
+            <column name="tx_count" type="BIGINT"/>
+            <column name="control_sum" type="DECIMAL(18,2)"/>
+            <column name="visible_at" type="TIMESTAMPTZ"/>
+            <!-- BaseEntity (configuration.md point 20). -->
+            <column name="version" type="BIGINT" defaultValueNumeric="0">
+                <constraints nullable="false"/>
+            </column>
+            <column name="created_at" type="TIMESTAMPTZ" defaultValueComputed="now()">
+                <constraints nullable="false"/>
+            </column>
+            <column name="updated_at" type="TIMESTAMPTZ" defaultValueComputed="now()">
+                <constraints nullable="false"/>
+            </column>
+        </createTable>
+        <rollback>
+            <dropTable tableName="prw_emission"/>
+        </rollback>
+    </changeSet>
+
+    <!-- The batch claim's idempotency key: the FULL identity of ONE physical
+         outbound artifact. CRDB's UPSERT resolves on the PRIMARY KEY only, so the
+         writer's INSERT ... ON CONFLICT (arrival_id, batch_ordinal) needs this
+         constraint to exist or a restarted stage duplicates instead of no-opping.
+
+         uq_prw_emission_outbound_msg is the cross-ARRIVAL guard and is the reason
+         the ordinal key is safe to narrow from CRW's three columns to two: an
+         outbound MsgId that repeated for any reason would be a duplicate on the
+         wire, and it fails here at the claim rather than at Fintegrate. -->
+    <changeSet id="prw-001-emission-identity" author="dcre">
+        <preConditions onFail="CONTINUE">
+            <not>
+                <indexExists tableName="prw_emission" indexName="uq_prw_emission_arrival_ordinal"/>
+            </not>
+        </preConditions>
+        <addUniqueConstraint tableName="prw_emission" columnNames="arrival_id, batch_ordinal"
+                             constraintName="uq_prw_emission_arrival_ordinal"/>
+        <createIndex tableName="prw_emission" indexName="uq_prw_emission_outbound_msg" unique="true">
+            <column name="outbound_msg_id"/>
+        </createIndex>
+        <rollback>
+            <dropIndex tableName="prw_emission" indexName="uq_prw_emission_outbound_msg"/>
+            <dropUniqueConstraint tableName="prw_emission"
+                                  constraintName="uq_prw_emission_arrival_ordinal"/>
+        </rollback>
+    </changeSet>
+
+    <changeSet id="prw-001-emission-member" author="dcre">
+        <preConditions onFail="CONTINUE">
+            <not><tableExists tableName="prw_emission_member"/></not>
+        </preConditions>
+        <createTable tableName="prw_emission_member">
+            <column name="id" type="UUID" defaultValueComputed="gen_random_uuid()">
+                <constraints primaryKey="true" nullable="false"/>
+            </column>
+            <column name="emission_id" type="UUID"><constraints nullable="false"/></column>
+            <column name="sequence" type="INT"><constraints nullable="false"/></column>
+            <column name="e2e" type="VARCHAR(35)"><constraints nullable="false"/></column>
+            <column name="amount" type="DECIMAL(18,2)"><constraints nullable="false"/></column>
+            <!-- BaseEntity (configuration.md point 20). -->
+            <column name="version" type="BIGINT" defaultValueNumeric="0">
+                <constraints nullable="false"/>
+            </column>
+            <column name="created_at" type="TIMESTAMPTZ" defaultValueComputed="now()">
+                <constraints nullable="false"/>
+            </column>
+            <column name="updated_at" type="TIMESTAMPTZ" defaultValueComputed="now()">
+                <constraints nullable="false"/>
+            </column>
+        </createTable>
+        <rollback>
+            <dropTable tableName="prw_emission_member"/>
+        </rollback>
+    </changeSet>
+
+    <!-- The member claim is set-based and re-runnable, so it needs the conflict
+         target to exist: ON CONFLICT (emission_id, sequence) DO NOTHING. -->
+    <changeSet id="prw-001-emission-member-identity" author="dcre">
+        <preConditions onFail="CONTINUE">
+            <not>
+                <indexExists tableName="prw_emission_member"
+                             indexName="uq_prw_member_emission_sequence"/>
+            </not>
+        </preConditions>
+        <addUniqueConstraint tableName="prw_emission_member" columnNames="emission_id, sequence"
+                             constraintName="uq_prw_member_emission_sequence"/>
+        <rollback>
+            <dropUniqueConstraint tableName="prw_emission_member"
+                                  constraintName="uq_prw_member_emission_sequence"/>
+        </rollback>
+    </changeSet>
+
+</databaseChangeLog>

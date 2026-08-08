@@ -1,0 +1,25 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<databaseChangeLog
+        xmlns="http://www.liquibase.org/xml/ns/dbchangelog"
+        xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
+        xsi:schemaLocation="http://www.liquibase.org/xml/ns/dbchangelog
+        http://www.liquibase.org/xml/ns/dbchangelog/dbchangelog-latest.xsd">
+
+    <!-- PRW owns the emission tables in dcre_pay. A NEW database, so the emission
+         schema arrives as ONE FILE of typed changesets (001) rather than CRW's
+         four-file history of retrofits (001-crw, 003-split's five changesets, and
+         the 003-split-backfill DML that migrated pre-split rows). None of those
+         retrofits has a successor here: there is no legacy row to backfill and no
+         narrower unique constraint to drop, because the batch grain is the shape
+         this table is BORN with.
+
+         CRW's 2026/08/001-emission-owed-view also has no successor. That view exists
+         because CRW is clock-driven and therefore not a DAG stage, so AGT needed a
+         published predicate to decide whether a collections arrival still owed an
+         emission. PRW is a real terminal DAG stage on the payments sheet, so its own
+         stage_outcome IS the completion signal and RouteDags.PAY carries
+         Emission.NONE. A view here would be a second home for that fact. -->
+    <include file="db/changelog/2026/08/001-prw-emission.xml"/>
+    <include file="db/changelog/2026/08/002-batch-metadata.xml"/>
+
+</databaseChangeLog>
