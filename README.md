@@ -130,7 +130,7 @@ EndToEndId (R-15) and `InstdAmt Ccy="ZAR"`.
 - Platform libs in Maven Local: `za.co.fnb.dcre:platform-persistence:0.1.0` and
   `za.co.fnb.dcre:platform-batch:0.1.0` (`platform-batch` brings `platform-files` and
   `platform-model` transitively; all resolve from `mavenLocal` only)
-- A reachable CockroachDB for a real run (the dcre-infra kind cluster, or any CRDB at `DCRE_PAY_DB_URL`)
+- A reachable CockroachDB for a real run (the dcre-infra kind cluster, or any CRDB at `DCRE_DB_URL`)
 
 ## Quickstart
 
@@ -148,7 +148,7 @@ Local one-shot run against the kind cluster's CRDB (dcre-infra `scripts/crdb-for
 host 26258 to cluster 26257):
 
 ```bash
-DCRE_PAY_DB_URL="jdbc:postgresql://localhost:26258/dcre_pay?sslmode=disable" \
+DCRE_DB_URL="jdbc:postgresql://localhost:26258/dcre_pay?sslmode=disable" \
   java -jar build/libs/prw-2.0.jar arrival.id=<uuid>
 ```
 
@@ -165,9 +165,9 @@ Image build is Paketo buildpacks, never a hand-rolled prod JVM Dockerfile:
 
 | Env var | Default | Purpose |
 |---|---|---|
-| `DCRE_PAY_DB_URL` | `jdbc:postgresql://localhost:26257/dcre_pay?sslmode=disable` | payments CockroachDB JDBC URL |
-| `DCRE_PAY_DB_USER` | `root` | DB user |
-| `DCRE_PAY_DB_PASSWORD` | (empty) | DB password |
+| `DCRE_DB_URL` | `jdbc:postgresql://localhost:26257/dcre_pay?sslmode=disable` | payments CockroachDB JDBC URL |
+| `DCRE_DB_USER` | `root` | DB user |
+| `DCRE_DB_PASSWORD` | (empty) | DB password |
 | `DCRE_AGTOPS_DB_URL` | `jdbc:postgresql://localhost:26257/agt_ops?sslmode=disable` | heartbeat datasource |
 | `DCRE_EXCHANGE_ROOT` | `../../../../../../infra/dcre-infra/exchange` | exchange root (RELATIVE default, six levels up; verified with `realpath` from this module) |
 | `DCRE_AMOUNT_SCALE` | `2` | money scale |
