@@ -52,10 +52,16 @@ public abstract class PrwTestcontainersBase {
      * column the shipped schema does not have is a monoculture in exactly the dimension
      * this fork changes: a stray {@code process_date} predicate would keep passing against
      * it. {@code NoClockPathTest} closes the same gap from the source side.
+     *
+     * <p>{@code client_token} IS created, at PRR's shape and nullability: it is the outbound
+     * client authority PRW reads (A-43, ruled 2026-08-08). Its previous absence was the
+     * opposite failure to the one above, and a worse one: the fixture omitted a column the
+     * shipped schema DOES have, so no test could express the behaviour in either direction.
      */
     public static void ensureSpineTables(final JdbcTemplate jdbc) {
         jdbc.execute("CREATE TABLE IF NOT EXISTS tx_header (id UUID DEFAULT gen_random_uuid() PRIMARY KEY,"
                 + " arrival_id UUID UNIQUE, msg_id VARCHAR(35), initg_pty VARCHAR(35),"
+                + " client_token VARCHAR(16),"
                 + " created_at TIMESTAMPTZ NOT NULL DEFAULT now())");
         jdbc.execute("CREATE TABLE IF NOT EXISTS tx_entry (id UUID DEFAULT gen_random_uuid() PRIMARY KEY,"
                 + " arrival_id UUID, sequence INT, e2e VARCHAR(35), amount DECIMAL(18,2),"
@@ -114,9 +120,29 @@ public abstract class PrwTestcontainersBase {
      */
     protected void seedArrival(final UUID arrival, final String client, final String msgId,
                                final int total, final int verdicts, final String outcome) {
+        seedArrival(arrival, client, client, msgId, total, verdicts, outcome);
+    }
+
+    /**
+     * The same fixture with the two client homes stated SEPARATELY, so a test can express an
+     * arrival whose R-31 filename token and copybook {@code destination_id} differ, or one
+     * that carries no filename token at all (A-43).
+     *
+     * <p>Every other fixture here seeds one value into both columns and is therefore
+     * structurally incapable of seeing which column PRW reads: it would pass whether the
+     * authority were applied correctly, incorrectly or not at all.
+     * {@code ClientAuthorityIT} is the only caller that can distinguish them.
+     *
+     * @param clientToken the R-31 filename token; {@code null} models a job launched outside
+     *                    AGT, where the copybook header must carry the emission
+     * @param initgPty    the copybook {@code destination_id}, never null in production
+     */
+    protected void seedArrival(final UUID arrival, final String clientToken, final String initgPty,
+                               final String msgId, final int total, final int verdicts,
+                               final String outcome) {
         ensureSpineTables();
-        jdbc.update("UPSERT INTO tx_header (arrival_id, msg_id, initg_pty) VALUES (?,?,?)",
-                arrival, msgId, client);
+        jdbc.update("UPSERT INTO tx_header (arrival_id, msg_id, initg_pty, client_token) VALUES (?,?,?,?)",
+                arrival, msgId, initgPty, clientToken);
         jdbc.update("INSERT INTO tx_entry (arrival_id, sequence, e2e, amount)"
                 + " SELECT ?, i, 'E2E' || i::STRING, 10.00 FROM generate_series(1, ?) AS g(i)"
                 + " ON CONFLICT (arrival_id, sequence) DO NOTHING", arrival, total);
