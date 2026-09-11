@@ -171,6 +171,57 @@
         </rollback>
     </changeSet>
 
+    <!-- READ-PATH INDEX on group_id. It lives here because PRW owns prw_emission.
+
+         PROVENANCE: it was declared by PRG, in that module's
+         2026/08/002-pay-reporting.xml as changeset prg-001-ix-emission-group, and it was a
+         live crashloop on kind-dcre-dev (measured 2026-09-11): every pay-prg-fnbrf01 pod
+         died with 'relation "public.prw_emission" does not exist' on
+         'CREATE INDEX ix_prg_emission_group ON public.prw_emission(group_id)' whenever PRG
+         migrated before PRW. Two separate faults, and moving the changeset fixes both:
+
+           - OWNERSHIP. A service must never create a schema object on another service's
+             table. Whichever of the two migrated second would have inherited the other's
+             decision about this index permanently.
+           - THE GUARD COULD NOT SAVE IT. <not><indexExists tableName="prw_emission"/></not>
+             evaluates TRUE when the TABLE itself is absent, because a missing table has no
+             such index. The precondition therefore PASSED on exactly the database where the
+             DDL could not run, and the CREATE INDEX failed on the missing relation. An
+             indexExists guard is only meaningful to the service that guarantees the table.
+
+         RENAMED with the owner: ix_prw_emission_group, never ix_prg_emission_group. An
+         object does not carry another service's prefix, and the old prg_ named the DECLARING
+         service rather than the owning one.
+
+         WHY THE INDEX IS WANTED AT ALL: group_id is the only foreign-key-shaped column on
+         this table with no index behind it. The three that exist are the primary key on id,
+         uq_prw_emission_arrival_ordinal on (arrival_id, batch_ordinal) and
+         uq_prw_emission_outbound_msg on outbound_msg_id, so navigating from a group to its
+         batches has no access path and falls back to a full scan. PRG's projection stack
+         (prg_member_status, prg_report_due) aggregates emissions by their group, which is
+         that direction. PRW does not read it today; it owns it, and is free to.
+
+         [!CONVENTION-OVERRIDE] onFail="MARK_RAN", where this file's header states CONTINUE
+         and never MARK_RAN (A-79, A-81). The hazard MARK_RAN carries is a skip recorded
+         PERMANENTLY against a database that was merely NOT YET READY, and that state cannot
+         arise here: prw_emission is created earlier in this same file by the service that
+         owns it, so the table always exists when this precondition is evaluated and the
+         guard can only be answering "is this index already present". That answer is stable,
+         so recording it is correct, and CONTINUE would re-ask it on every future run for no
+         benefit. The reason the retired PRG copy was unsafe was never the MARK_RAN: it was
+         that PRG could not guarantee the table. -->
+    <changeSet id="prw-001-emission-group-index" author="dcre">
+        <preConditions onFail="MARK_RAN">
+            <not><indexExists tableName="prw_emission" indexName="ix_prw_emission_group"/></not>
+        </preConditions>
+        <createIndex tableName="prw_emission" indexName="ix_prw_emission_group">
+            <column name="group_id"/>
+        </createIndex>
+        <rollback>
+            <dropIndex tableName="prw_emission" indexName="ix_prw_emission_group"/>
+        </rollback>
+    </changeSet>
+
     <changeSet id="prw-001-emission-member" author="dcre">
         <preConditions onFail="CONTINUE">
             <not><tableExists tableName="prw_emission_member"/></not>

@@ -113,7 +113,9 @@ parameter, because AGT supplies none.
 
 Reads (grants-based): `tx_header` + `tx_entry` (PRR), `validation_log` (PTV), `pai_verdict` (PAI).
 Writes (PRW single-writer): `prw_emission_group` (UNIQUE `arrival_id`, and `(client, source_msg_id)`),
-`prw_emission` (UNIQUE `(arrival_id, batch_ordinal)`, unique `outbound_msg_id`),
+`prw_emission` (UNIQUE `(arrival_id, batch_ordinal)`, unique `outbound_msg_id`, and the
+non-unique `ix_prw_emission_group` on `group_id`, which PRG's projection stack reads and which PRG
+wrongly declared on this table until 2026-09-11),
 `prw_emission_member` (UNIQUE `(emission_id, sequence)`), plus the outbound batch files. Liquibase
 owns all DDL with per-service history tables `prw_databasechangelog` / `prw_databasechangeloglock`;
 Spring Batch metadata sits under the `PRW_BATCH_` prefix with `initialize-schema: never`.
