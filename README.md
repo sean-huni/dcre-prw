@@ -1,11 +1,22 @@
 # dcre-prw
 
+> Part of the DCRE fleet. For the fleet map, the rulings and the diagrams that specify every stage, start at the [DCRE design register](https://github.com/sean-huni/dcre-design-register); the complete list of live repositories is its [Repositories](https://github.com/sean-huni/dcre-design-register#repositories) table.
+
 Payments Request Writer: the DCRE stage that generates and writes the Fintegrate request
 (`pain.008`) for a validated payments arrival, into that client's `fint-req/out` exchange directory.
 
 Caption on the payments REQ sheet: **"Generates & Writes Fintegrate Request to Directory"**.
 
-## Where it sits
+## What it does
+
+| | |
+| --- | --- |
+| Stage code | `PRW` (AGT `Stage.PRW`) |
+| Family / leg | payments (ENDO), REQ |
+| Trigger | arrival-launched: a DAG successor, one Kubernetes Job per arrival (not clock-driven) |
+| Upstream | `PAI` (the fork after it) |
+| Downstream | none (terminal, alongside `PIR`); the `pain.008` goes to Fintegrate via `<client>/fint-req/out` |
+| Diagram sheet | `dcre-payments-req` in the design register |
 
 ```
 PRR -> PTV -> PAI -> || -> { PRW -> Fint Req ,  PIR -> OnHost Resp }
@@ -15,13 +26,11 @@ PRW is an ordinary DAG stage on the parallel fork after PAI, exactly where MRW s
 sheet. AGT launches it as a short-lived Kubernetes Job with ONE identifying job parameter,
 `arrival.id` (R-16). It is terminal on the payments DAG, alongside PIR.
 
-## What it does
-
 Reads the arrival's PASS-validated, PAI-verdicted transactions from `dcre_pay`, freezes their
 membership into an immutable batch plan (at most `max-size` transactions per outbound file), and
 publishes the plan's synthetic `pain.008` XML in ordinal order for Fintegrate.
 
-## It was forked from CRW, and the fork REMOVED a mechanism
+### It was forked from CRW, and the fork REMOVED a mechanism
 
 CRW is the collections writer and emits the same ISO message, `pain.008`, which is why it is the
 source rather than MRW (MRW emits `pain.009` mandate initiation, a different message entirely).
@@ -40,7 +49,7 @@ So PRW carries none of the machinery that exists to serve a second run date:
 | the pay arm of `DueArms` / `DueSql`, and arm composition entirely | that arm existed ONLY because payments had no writer of its own; it is the coupling this split removes |
 | `ClientLanePartitioner`, `LaneEmissionService` | they fan a run date's due-CLIENT universe across lanes; one arrival has one client |
 | `countPriorArtifacts` (cross-run-date artifact offset) | provably always zero without a second run date |
-| `crw_emission_owed` view | it exists because CRW is not a DAG stage, so AGT needed a published completion predicate. PRW is terminal, so `RouteDags.PAY` carries `Emission.NONE` |
+| `crw_emission_owed` view | it exists because CRW is not a DAG stage, so AGT needed a published completion predicate. PRW is terminal, so AGT's `RouteDags.ENDO` carries `Emission.NONE` (checked 2026-09-28) |
 | every `flow` discriminator | the DATABASE is the discriminator now: a row in `dcre_pay` IS a payment |
 
 This absence is **tested, not merely intended**. `NoClockPathTest` scans the shipped code (comments
@@ -49,14 +58,14 @@ persisted shape off the entity classes, rejects any method taking a `LocalDate`,
 tasklet binds `arrival.id` and nothing else. `EmissionSchemaIT` asserts the same absence against the
 live database catalog. Both have been seen red under mutation.
 
-## What it KEEPS from CRW
+### What it KEEPS from CRW
 
 The `pain.008` builder, the staged write, the R-24 frozen-plan reconciliation, and the CockroachDB
 40001 retry discipline. Also the **split**, which is a Fintegrate file-size cap rather than
 warehousing machinery: a 300k-transaction payment arrival needs it exactly as much as a collections
 one.
 
-## Eligibility
+### Eligibility
 
 An arrival is eligible when BOTH hold, and they are two gates rather than one on purpose:
 
@@ -111,6 +120,10 @@ parameter, because AGT supplies none.
 
 ### Data
 
+Database today: `dcre_pay`, via `DCRE_DB_URL` / `DCRE_DB_USER` / `DCRE_DB_PASSWORD`. A second
+datasource, `DCRE_AGTOPS_DB_URL` / `_USER` / `_PASSWORD`, targets `agt_ops` for the `HeartbeatWriter`
+liveness stamp.
+
 Reads (grants-based): `tx_header` + `tx_entry` (PRR), `validation_log` (PTV), `pai_verdict` (PAI).
 Writes (PRW single-writer): `prw_emission_group` (UNIQUE `arrival_id`, and `(client, source_msg_id)`),
 `prw_emission` (UNIQUE `(arrival_id, batch_ordinal)`, unique `outbound_msg_id`),
@@ -125,7 +138,7 @@ EndToEndId (R-15) and `InstdAmt Ccy="ZAR"`.
 
 ## Prerequisites
 
-- Java 25 (Gradle toolchain; wrapper 9.5.1 included)
+- Java 25 (`.sdkmanrc` pins `java=25-tem`); Gradle 9.5.1 via the committed wrapper
 - Docker (Testcontainers test suite and image build)
 - Platform libs in Maven Local: `za.co.fnb.dcre:platform-persistence:0.1.0` and
   `za.co.fnb.dcre:platform-batch:0.1.0` (`platform-batch` brings `platform-files` and
@@ -155,12 +168,6 @@ DCRE_DB_URL="jdbc:postgresql://localhost:26258/dcre_pay?sslmode=disable" \
 The JVM exit code carries the Batch verdict (R-34). A clean clone runs with NO `.env`:
 `application.yml` commits working dev defaults.
 
-Image build is Paketo buildpacks, never a hand-rolled prod JVM Dockerfile:
-
-```bash
-./gradlew bootBuildImage      # dcre-prw:2.0, BP_JVM_VERSION=25
-```
-
 ## Configuration
 
 | Env var | Default | Purpose |
@@ -169,12 +176,16 @@ Image build is Paketo buildpacks, never a hand-rolled prod JVM Dockerfile:
 | `DCRE_DB_USER` | `root` | DB user |
 | `DCRE_DB_PASSWORD` | (empty) | DB password |
 | `DCRE_AGTOPS_DB_URL` | `jdbc:postgresql://localhost:26257/agt_ops?sslmode=disable` | heartbeat datasource |
+| `DCRE_AGTOPS_DB_USER` / `DCRE_AGTOPS_DB_PASSWORD` | `root` / (empty) | heartbeat credentials |
 | `DCRE_EXCHANGE_ROOT` | `../../../../../../infra/dcre-infra/exchange` | exchange root (RELATIVE default, six levels up; verified with `realpath` from this module) |
 | `DCRE_AMOUNT_SCALE` | `2` | money scale |
 | `DCRE_PRW_MAX_SPLIT_SIZE` | `5000` | max tx per outbound `pain.008` |
 | `DCRE_PRW_SPLIT_FNBRF01` | `5000` | per-client split override |
+| `JOB_NAME` | unset: seam falls back to `local-prw-<executionId>` | set by AGT on the K8s Job |
 
-Precedence: yml default < `.env` < real environment variable.
+Precedence: `application.yml` default < environment variable. Nothing loads a `.env` file. This
+table is the documented set, not a closed total: Spring Boot relaxed binding lets any property be
+overridden by its environment-variable form.
 
 **The `dcre.prw.split.overrides` map carries a committed, behaviour-neutral entry on purpose.** An
 absent map cannot be distinguished from a Java-prefix/yml-key drift, which binds an EMPTY map, drops
@@ -185,12 +196,48 @@ declared prefix matches the yml key path; it has been seen red for exactly that 
 ## Testing
 
 ```bash
-./gradlew clean build   # 46 tests, Docker required
+./gradlew clean build   # Docker required
 ```
+
+Integration tests use Testcontainers CockroachDB `cockroachdb/cockroach:v26.2.3` through
+`PrwTestcontainersBase` (one container, one cached Spring context).
+
+- `PrwJobTest`: the whole job launched exactly as AGT launches it, `arrival.id` only.
+- `EligibilityIT`: the two eligibility gates, including the zero-PASS arrival.
+- `SplitPlannerIT` / `EmissionSplitIT`: frozen split plan, set-based ordinal claims, strictly ordinal
+  publication and the crash matrix (a VISIBLE batch is never re-sent).
+- `EmissionSchemaIT`: group/batch grain round trip and the absence of clock columns in the catalog.
+- `ClientAuthorityIT`: `prw_emission_group.client` carries `tx_header.client_token`, `initg_pty`
+  only as fallback (A-43).
+- `EmissionServiceRetryTest` / `PrwJobConfigRetryTest`: 40001 retry in a fresh transaction at batch
+  grain and on the production `emitStep`.
+- `SplitPropertiesBindingTest` / `SplitPropertiesLookupTest`: the override map binds from the shipped
+  yml, and the lookup distinguishes an override from the default.
+- `DueSqlAssemblyTest`: the assembled due statement keeps its whitespace (the sibling CRW shipped a
+  fused token from the same text-block shape).
+- `AgtWireContractTest`: PRW reads the `DCRE_DB_URL` name AGT injects (one-sided).
+- Cucumber (`CucumberSuiteTest`, `features/prw-emission.feature`).
 
 Structural guards worth knowing about before editing: `NoClockPathTest` and `PayFlowOnlyTest` will
 fail if the clock path, the warehousing vocabulary, arm composition or a flow discriminator is
 reintroduced. That is their job. If one fires, the fix is almost never to relax the test.
+
+## Local cluster deployment
+
+Image build is Paketo buildpacks, never a hand-rolled prod JVM Dockerfile:
+
+```bash
+./gradlew bootBuildImage      # dcre-prw:2.0, builder-noble-java-tiny, BP_JVM_VERSION=25
+kind load docker-image --name dcre-dev dcre-prw:2.0
+kubectl set env -n dcre deploy/dcre-agt AGT_PRW_IMAGE=dcre-prw:2.0
+```
+
+The cluster comes from `dcre-infra` (`scripts/kind-up.sh`; `scripts/env-reset.sh` for a clean
+slate). AGT resolves the image from `AGT_PRW_IMAGE` (empty means launch-disabled);
+`scripts/switch-version.sh` does not export it (its stage roster predates the payments split,
+checked 2026-09-28), hence the explicit `kubectl set env`. AGT launches the Job in the `dcre-pay`
+namespace with the single program arg `arrival.id=<uuid>` and env `JOB_NAME`, `DCRE_DB_URL` (the
+`dcre_pay` URL), `DCRE_EXCHANGE_ROOT=/exchange`, `DCRE_AGTOPS_DB_URL` and `DCRE_AGTOPS_DB_USER`.
 
 ## Follow-ups
 
