@@ -144,6 +144,7 @@ EndToEndId (R-15) and `InstdAmt Ccy="ZAR"`.
   `za.co.fnb.dcre:platform-batch:0.1.0` (`platform-batch` brings `platform-files` and
   `platform-model` transitively; all resolve from `mavenLocal` only)
 - A reachable CockroachDB for a real run (the dcre-infra kind cluster, or any CRDB at `DCRE_DB_URL`)
+- The `dcre_pay` database must be created by hand (`CREATE DATABASE IF NOT EXISTS dcre_pay;`): dcre-infra's `scripts/crdb-init.sql` creates only `dcre_col`, `agt_ops` and `dcre_man` (checked 2026-09-28).
 
 ## Quickstart
 
@@ -241,7 +242,9 @@ namespace with the single program arg `arrival.id=<uuid>` and env `JOB_NAME`, `D
 
 ## Follow-ups
 
-- `Pain008Writer` is currently identical in `crw` and `prw`. The family design
+- `Pain008Writer` in `prw` is similar to, not identical with, `crw`'s: the build logic matches line
+  for line, but it binds `PrwEmissionMemberEntity` where CRW's binds `CrwEmissionMemberEntity`, and
+  the class comments differ (checked 2026-09-28). The family design
   (`2026-08-07-payments-family-build-design.md`) homes the shared builder in a `platform-fintegrate`
   module consumed by both. That module does not exist yet and extracting it means repointing CRW,
   which was out of scope for this fork. The duplication is known and scheduled, not accidental.
