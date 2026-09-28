@@ -198,3 +198,9 @@ reintroduced. That is their job. If one fires, the fix is almost never to relax 
   (`2026-08-07-payments-family-build-design.md`) homes the shared builder in a `platform-fintegrate`
   module consumed by both. That module does not exist yet and extracting it means repointing CRW,
   which was out of scope for this fork. The duplication is known and scheduled, not accidental.
+
+## Related repositories
+
+The complete, current list of live DCRE repositories (stage services, orchestrator, platform libraries, infra and tooling) lives in one place: the [DCRE design register README](https://github.com/sean-huni/dcre-design-register#repositories). Deprecated and archived repositories are deliberately absent from it. This README does not copy that list, so it cannot drift.
+
+- Design register: https://github.com/sean-huni/dcre-design-register (start at `docs/specs/DESIGN-REGISTER.md`; the diagrams in `docs/diagrams/` are the specification)
